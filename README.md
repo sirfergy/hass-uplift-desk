@@ -62,9 +62,9 @@ This integration relies on the uplift-ble Python package, which can be found on 
 
 > Note: When using this project, no other device can be connected to the desk or it will be undiscoverable. This means that the Uplift Desk app needs to be either disconnected or closed for this application to work.
 
-> Normally, an advanced keypad with programmable buttons is required to use this integration (to set the presets the integration exposes). However, for users without an advanced keypad, the desk can still be programmed with preset values using the cli provided by the [uplift-ble](https://github.com/librick/uplift-ble) to set the preset values. 
+> Presets 1 and 2 can be programmed from Home Assistant with the **Save Height as Preset** buttons (see [Saving Presets](#saving-presets)). Presets 3 and 4 still need an advanced keypad with programmable buttons, or the cli provided by [uplift-ble](https://github.com/librick/uplift-ble).
 
-The integration currently provides up to 7 entities:
+The integration currently provides up to 11 entities:
 1. A sensor for the current height of the desk. This will update automatically as your desk is moving, though it is not instantaneous and should not be relied on for safety.
 2. A button to move the desk to its configured preset 1.
 3. A button to move the desk to its configured preset 2.
@@ -72,6 +72,10 @@ The integration currently provides up to 7 entities:
 5. A disabled-by-default button to move supported desks to configured preset 4.
 6. A number to move the desk to a specific height (the Height Setpoint).
 7. A Stop button to stop movement and cancel pending preset or height requests.
+8. A configuration button to save the desk's current height as preset 1.
+9. A configuration button to save the desk's current height as preset 2.
+10. A diagnostic sensor for the height stored in preset 1.
+11. A diagnostic sensor for the height stored in preset 2.
 
 Preset 3 and 4 buttons are currently limited to the verified `0x00FF`,
 `0xFE60`, and `0xFF00` connected GATT profiles. Some V3 adapters advertise
@@ -141,6 +145,33 @@ no Stop packet was sent and does not queue a delayed Stop for a later reconnect.
 An explicit preset or height setpoint request made after Stop can still move
 the desk. Keep the physical keypad available; Bluetooth Stop is not an
 emergency-stop circuit.
+
+### Saving Presets
+
+The desk can only store its *current* height in a preset; there is no command
+to store an arbitrary number. To program preset 1 or 2 from Home Assistant:
+
+1. Move the desk to the height you want, for example with the **Height
+   Setpoint** number or the keypad.
+2. Wait for the desk to stop, then press **Save Height as Preset 1** (or 2).
+   These buttons are on the device page under *Configuration*.
+
+Saving is refused while the desk is moving toward a Height Setpoint, within a
+couple of seconds of a preset recall, or while it is still reporting height
+changes, because the desk would store wherever it happened to be. It is also
+refused when the desk reports its height without identifying its units; set a
+[fallback height unit](#fallback-height-unit) so movement can be tracked. Stop
+cancels a save that has not been sent yet. Presets saved this way are stored
+on the desk's Bluetooth adapter, so the keypad and the **Move to Preset**
+buttons use them too. This also fixes recall on desks programmed only through
+the Uplift phone app, which keeps its presets on the phone.
+
+The **Preset 1 Height** and **Preset 2 Height** diagnostic sensors show what
+the desk reports for each slot. Firmware reports these values in different
+units, so the integration picks the reading that fits within the desk's height
+limits and leaves the sensor unknown when that is ambiguous or the desk has not
+reported the preset. With **Query units and limits on connect** enabled, the
+integration asks the desk to re-report its presets after each save.
 
 <!-- CONTRIBUTING -->
 ## Contributing

@@ -88,11 +88,23 @@
         "sensor": {
             "desk_height": {
                 "name": "Height"
+            },
+            "desk_preset_1_height": {
+                "name": "Preset 1 Height"
+            },
+            "desk_preset_2_height": {
+                "name": "Preset 2 Height"
             }
         },
         "button": {
             "desk_stop": {
                 "name": "Stop"
+            },
+            "desk_save_preset_1": {
+                "name": "Save Height as Preset 1"
+            },
+            "desk_save_preset_2": {
+                "name": "Save Height as Preset 2"
             },
             "desk_preset_1": {
                 "name": "Move to Preset 1"

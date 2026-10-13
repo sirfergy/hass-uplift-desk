@@ -65,7 +65,9 @@ async def test_presets_follow_connected_gatt_profile(
         }
         assert set(buttons) == {
             f"{DESK_ADDRESS}_desk_preset_{slot}" for slot in expected_slots
-        } | {f"{DESK_ADDRESS}_desk_stop"}
+        } | {f"{DESK_ADDRESS}_desk_save_preset_{slot}" for slot in (1, 2)} | {
+            f"{DESK_ADDRESS}_desk_stop"
+        }
         for slot in expected_slots:
             entity = buttons[f"{DESK_ADDRESS}_desk_preset_{slot}"]
             assert entity.disabled_by is (
