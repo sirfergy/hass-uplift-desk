@@ -141,6 +141,8 @@ class UpliftDeskBluetoothCoordinator(DataUpdateCoordinator):
         self._last_motion_at: float | None = None
         # Saved slots whose new height the desk has not reported back yet.
         self._unconfirmed_preset_slots: set[int] = set()
+        # Display unit reported when each preset report arrived, if known.
+        self._preset_report_units: dict[int, DeskUnit | None] = {}
         self.keypad_display_units = None
         self._reconnect_task: "asyncio.Future | None" = None
         self._intentional_disconnect: bool = False
@@ -354,7 +356,7 @@ class UpliftDeskBluetoothCoordinator(DataUpdateCoordinator):
                 for slot in SAVEABLE_PRESET_SLOTS:
                     controller.on(
                         DeskEventType[f"HEIGHT_PRESET_{slot}"],
-                        functools.partial(self._async_height_preset_callback, slot),
+                        functools.partial(self._async_height_preset_callback, controller, slot),
                     )
                 # Preset decoding uses the display unit to break ties.
                 controller.on(DeskEventType.UNIT, self._async_unit_callback)
@@ -550,7 +552,11 @@ class UpliftDeskBluetoothCoordinator(DataUpdateCoordinator):
         return decode_preset_height_mm(
             raw,
             *self.effective_height_limits_mm,
-            unit=self._desk.unit or self._fallback_unit,
+            unit=(
+                self._preset_report_units.get(slot)
+                or self._desk.unit
+                or self._fallback_unit
+            ),
         )
 
     @property
@@ -668,7 +674,7 @@ class UpliftDeskBluetoothCoordinator(DataUpdateCoordinator):
         self._unconfirmed_preset_slots.add(slot)
         self.async_update_listeners()
         if self._query_on_connect:
-            await self._async_request_preset_report(controller)
+            await self._async_request_preset_report(controller, generation)
 
     def _raise_unless_desk_settled(self, slot: int) -> None:
         desk = self._desk
@@ -684,7 +690,9 @@ class UpliftDeskBluetoothCoordinator(DataUpdateCoordinator):
                 f"Desk {self.desk_info} is moving; wait for it to stop before saving preset {slot}"
             )
 
-    async def _async_request_preset_report(self, controller: DeskController) -> None:
+    async def _async_request_preset_report(
+        self, controller: DeskController, generation: int
+    ) -> None:
         """Best-effort: ask the desk to re-report its presets after a save."""
         try:
             # On hardware, a bare 0x07 sent straight after the save drew no
@@ -692,7 +700,8 @@ class UpliftDeskBluetoothCoordinator(DataUpdateCoordinator):
             # answers with its presets on connect.
             await asyncio.sleep(PRESET_REPORT_DELAY_SECONDS)
             if (
-                self._intentional_disconnect
+                generation != self._motion_generation
+                or self._intentional_disconnect
                 or controller is not self._desk
                 or not self.is_connected
             ):
@@ -922,8 +931,13 @@ class UpliftDeskBluetoothCoordinator(DataUpdateCoordinator):
         _LOGGER.debug("Unit callback received unit: %s", unit)
         self.async_set_updated_data(self._desk)
 
-    def _async_height_preset_callback(self, slot: int, raw: int) -> None:
+    def _async_height_preset_callback(
+        self, controller: DeskController, slot: int, raw: int
+    ) -> None:
         self._unconfirmed_preset_slots.discard(slot)
+        # A later display-unit change does not convert the stored preset, so
+        # decode this report with the unit in effect when it arrived.
+        self._preset_report_units[slot] = controller.unit
         _LOGGER.debug(
             "Height preset %d callback received raw value %d (decoded: %s mm)",
             slot,

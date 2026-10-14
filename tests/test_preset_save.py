@@ -15,6 +15,7 @@ from uplift_ble.desk_enums import DeskUnit
 
 from custom_components.uplift_desk.const import (
     CONF_QUERY_ON_CONNECT,
+    PRESET_REPORT_DELAY_SECONDS,
     PRESET_SAVE_SETTLE_SECONDS,
 )
 from custom_components.uplift_desk.coordinator import decode_preset_height_mm
@@ -327,6 +328,38 @@ async def test_display_unit_breaks_a_preset_tie(hass, loaded_desk):
     await client.simulate_notification(make_units_packet(0x01))
     await hass.async_block_till_done()
     assert float(preset_state(hass, 1)) == pytest.approx(1295.4)
+
+
+async def test_unit_change_does_not_reinterpret_an_earlier_preset(hass, loaded_desk):
+    _, client = loaded_desk
+    await client.simulate_notification(make_units_packet(0x01))
+    await client.simulate_notification(preset_packet(1, 500))
+    await hass.async_block_till_done()
+    assert float(preset_state(hass, 1)) == pytest.approx(1270.0)
+
+    # Switching the keypad to centimeters does not change the stored preset.
+    await client.simulate_notification(make_units_packet(0x00))
+    await hass.async_block_till_done()
+    assert float(preset_state(hass, 1)) == pytest.approx(1270.0)
+
+
+async def test_stop_during_readback_delay_skips_the_preset_request(
+    loaded_desk, monkeypatch
+):
+    entry, client = loaded_desk
+    coordinator = entry.runtime_data
+    fast_sleep = asyncio.sleep
+
+    async def sleep(delay=None, *args, **kwargs):
+        if delay == PRESET_REPORT_DELAY_SECONDS:
+            await coordinator.async_stop_movement()
+        await fast_sleep(0)
+
+    monkeypatch.setattr(asyncio, "sleep", sleep)
+
+    await coordinator.async_save_preset(1)
+
+    assert client.writes == [WAKE, WAKE, WAKE, command(0x03), command(0x2B)]
 
 
 async def test_preset_heights_do_not_outlive_the_connection(hass, fake_ble):
