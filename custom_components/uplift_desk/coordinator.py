@@ -656,22 +656,34 @@ class UpliftDeskBluetoothCoordinator(DataUpdateCoordinator):
         """
         if slot not in SAVEABLE_PRESET_SLOTS:
             raise ValueError(f"Preset {slot} cannot be saved")
-        check_stationary = functools.partial(self._raise_unless_desk_settled, slot)
-        check_stationary()
+        self._raise_unless_desk_settled(slot)
         generation = self._motion_generation
         controller = await self._get_or_establish_controller()
-        # Re-check under the write lock: motion may start while the desk wakes.
-        if not await self._async_write_motion(
-            controller,
-            f"save_height_preset_{slot}",
-            generation,
-            before_write=check_stationary,
-        ):
+        already_unconfirmed = slot in self._unconfirmed_preset_slots
+
+        def before_write() -> None:
+            # Re-check under the write lock: motion may start while the desk
+            # wakes. Mark the slot before sending so a report that arrives
+            # while the write is in flight confirms it rather than being lost.
+            self._raise_unless_desk_settled(slot)
+            self._unconfirmed_preset_slots.add(slot)
+
+        try:
+            written = await self._async_write_motion(
+                controller,
+                f"save_height_preset_{slot}",
+                generation,
+                before_write=before_write,
+            )
+        except BaseException:
+            if not already_unconfirmed:
+                self._unconfirmed_preset_slots.discard(slot)
+            raise
+        if not written:
             raise HomeAssistantError(
                 f"Saving preset {slot} for desk {self.desk_info} was cancelled"
             )
         _LOGGER.debug("Saved current height as preset %d on desk %s", slot, self.desk_info)
-        self._unconfirmed_preset_slots.add(slot)
         self.async_update_listeners()
         if self._query_on_connect:
             await self._async_request_preset_report(controller, generation)

@@ -295,6 +295,54 @@ async def test_failed_preset_request_does_not_fail_the_save(
     assert "could not request its updated presets" in caplog.text
 
 
+async def test_report_during_the_save_write_confirms_the_preset(
+    hass, fake_ble, monkeypatch
+):
+    entry, (client,) = await setup_desk(
+        hass, fake_ble, options={CONF_QUERY_ON_CONNECT: False}
+    )
+    try:
+        coordinator = entry.runtime_data
+        record_write = client.write_gatt_char
+
+        async def write(char_uuid, data, response=False):
+            await record_write(char_uuid, data, response)
+            if data[2] == 0x03:
+                # Some desks may report the new preset before the write returns.
+                await client.simulate_notification(preset_packet(1, 300))
+                await wait_until(lambda: coordinator._desk.height_preset_1 == 300)
+
+        monkeypatch.setattr(client, "write_gatt_char", write)
+
+        await press(hass, "desk_save_preset_1")
+        await hass.async_block_till_done()
+
+        assert float(preset_state(hass, 1)) == 762.0
+    finally:
+        await hass.config_entries.async_unload(entry.entry_id)
+
+
+async def test_failed_save_write_keeps_the_reported_preset(hass, loaded_desk, monkeypatch):
+    entry, client = loaded_desk
+    await client.simulate_notification(preset_packet(1, 300))
+    await hass.async_block_till_done()
+    record_write = client.write_gatt_char
+
+    async def write(char_uuid, data, response=False):
+        if data[2] == 0x03:
+            raise BleakError("link lost")
+        await record_write(char_uuid, data, response)
+
+    monkeypatch.setattr(client, "write_gatt_char", write)
+
+    with pytest.raises(BleakError):
+        await press(hass, "desk_save_preset_1")
+    entry.runtime_data.async_update_listeners()
+    await hass.async_block_till_done()
+
+    assert float(preset_state(hass, 1)) == 762.0
+
+
 async def test_preset_reports_update_sensors(hass, loaded_desk):
     _, client = loaded_desk
     await client.simulate_notification(limits_packet(1300, 650))

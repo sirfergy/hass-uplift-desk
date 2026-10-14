@@ -62,7 +62,7 @@ This integration relies on the uplift-ble Python package, which can be found on 
 
 > Note: When using this project, no other device can be connected to the desk or it will be undiscoverable. This means that the Uplift Desk app needs to be either disconnected or closed for this application to work.
 
-> Presets 1 and 2 can be programmed from Home Assistant with the **Save Height as Preset** buttons (see [Saving Presets](#saving-presets)). Presets 3 and 4 still need an advanced keypad with programmable buttons, or the cli provided by [uplift-ble](https://github.com/librick/uplift-ble).
+> Presets 1 and 2 can be programmed from Home Assistant with the **Save Height as Preset** buttons (see [Saving Presets](#saving-presets)). Presets 3 and 4 still need an advanced keypad with programmable buttons.
 
 The integration currently provides up to 11 entities:
 1. A sensor for the current height of the desk. This will update automatically as your desk is moving, though it is not instantaneous and should not be relied on for safety.
