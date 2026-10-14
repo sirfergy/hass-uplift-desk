@@ -38,6 +38,7 @@ from .const import (
     HEIGHT_SETPOINT_ARRIVAL_TOLERANCE_MM,
     HEIGHT_SETPOINT_INTERRUPTION_EPSILON_MM,
     PRESET_HEIGHT_LIMIT_TOLERANCE_MM,
+    PRESET_REPORT_DELAY_SECONDS,
     PRESET_SAVE_SETTLE_SECONDS,
     SAVEABLE_PRESET_SLOTS,
 )
@@ -78,24 +79,33 @@ def _parse_fallback_unit(value: str | None) -> DeskUnit | None:
         return None
 
 
-def decode_preset_height_mm(raw: int, min_mm: int, max_mm: int) -> float | None:
+def decode_preset_height_mm(
+    raw: int, min_mm: int, max_mm: int, unit: DeskUnit | None = None
+) -> float | None:
     """Decode a raw preset report into millimeters, or None when unsure.
 
-    Preset reports carry no unit, and firmware differs: some report
-    millimeters (identical to tenths of a centimeter), others tenths of an
-    inch. A desk's height range spans well under the 2.54x ratio between the
-    two readings, so at most one normally lands within the desk's limits.
-    Zero or two plausible readings leave the preset unknown rather than
-    guessing.
+    Preset reports carry no unit. A tested inch-mode desk reports tenths of
+    its display unit (like height), but uplift-ble warns firmware varies, so
+    both readings are considered: millimeters (identical to tenths of a
+    centimeter) and tenths of an inch. A desk's height range spans well under
+    the 2.54x ratio between them, so normally only one lands within the
+    desk's limits. When both do (wide fallback limits), the desk's display
+    unit breaks the tie; without one the preset stays unknown.
     """
+    as_mm = float(raw)
+    as_tenths_inch = raw / 10 * 25.4
     plausible = [
         height_mm
-        for height_mm in (float(raw), round(raw * 2.54, 1))
+        for height_mm in (as_mm, as_tenths_inch)
         if min_mm - PRESET_HEIGHT_LIMIT_TOLERANCE_MM
         <= height_mm
         <= max_mm + PRESET_HEIGHT_LIMIT_TOLERANCE_MM
     ]
-    return plausible[0] if len(plausible) == 1 else None
+    if len(plausible) == 1:
+        return plausible[0]
+    if len(plausible) == 2 and unit is not None:
+        return as_tenths_inch if unit is DeskUnit.INCHES else as_mm
+    return None
 
 
 class UpliftDeskBluetoothCoordinator(DataUpdateCoordinator):
@@ -129,6 +139,8 @@ class UpliftDeskBluetoothCoordinator(DataUpdateCoordinator):
         self._move_in_flight: bool = False
         # Monotonic time of the last observed height change or preset recall.
         self._last_motion_at: float | None = None
+        # Saved slots whose new height the desk has not reported back yet.
+        self._unconfirmed_preset_slots: set[int] = set()
         self.keypad_display_units = None
         self._reconnect_task: "asyncio.Future | None" = None
         self._intentional_disconnect: bool = False
@@ -344,6 +356,8 @@ class UpliftDeskBluetoothCoordinator(DataUpdateCoordinator):
                         DeskEventType[f"HEIGHT_PRESET_{slot}"],
                         functools.partial(self._async_height_preset_callback, slot),
                     )
+                # Preset decoding uses the display unit to break ties.
+                controller.on(DeskEventType.UNIT, self._async_unit_callback)
                 try:
                     await controller.start()  # once per fresh controller
                 except TimeoutError:
@@ -524,15 +538,20 @@ class UpliftDeskBluetoothCoordinator(DataUpdateCoordinator):
         """The height (mm) stored in a preset slot, as last reported by the desk.
 
         Decoded on every read from the live controller's raw report and the
-        current limits, so the result does not depend on whether the preset,
-        unit, or limit reports arrived first, and never outlives a connection.
+        current limits and unit, so the result does not depend on whether the
+        preset, unit, or limit reports arrived first, and never outlives a
+        connection. Unknown after a save until the desk reports the new value.
         """
-        if self._desk is None:
+        if self._desk is None or slot in self._unconfirmed_preset_slots:
             return None
         raw = getattr(self._desk, f"height_preset_{slot}")
         if raw is None:
             return None
-        return decode_preset_height_mm(raw, *self.effective_height_limits_mm)
+        return decode_preset_height_mm(
+            raw,
+            *self.effective_height_limits_mm,
+            unit=self._desk.unit or self._fallback_unit,
+        )
 
     @property
     def desk_recently_moved(self) -> bool:
@@ -646,6 +665,8 @@ class UpliftDeskBluetoothCoordinator(DataUpdateCoordinator):
                 f"Saving preset {slot} for desk {self.desk_info} was cancelled"
             )
         _LOGGER.debug("Saved current height as preset %d on desk %s", slot, self.desk_info)
+        self._unconfirmed_preset_slots.add(slot)
+        self.async_update_listeners()
         if self._query_on_connect:
             await self._async_request_preset_report(controller)
 
@@ -665,15 +686,18 @@ class UpliftDeskBluetoothCoordinator(DataUpdateCoordinator):
 
     async def _async_request_preset_report(self, controller: DeskController) -> None:
         """Best-effort: ask the desk to re-report its presets after a save."""
-        if (
-            self._intentional_disconnect
-            or controller is not self._desk
-            or not self.is_connected
-        ):
-            return
         try:
-            # The save just woke the desk; 0x07 makes it report limits and presets.
-            await self._async_command_only(controller, "request_height_limits")
+            # On hardware, a bare 0x07 sent straight after the save drew no
+            # reply. Pause, then repeat the wake + 0x07 sequence the desk
+            # answers with its presets on connect.
+            await asyncio.sleep(PRESET_REPORT_DELAY_SECONDS)
+            if (
+                self._intentional_disconnect
+                or controller is not self._desk
+                or not self.is_connected
+            ):
+                return
+            await controller.request_height_limits()
         except (BleakError, TimeoutError):
             _LOGGER.warning(
                 "Saved a preset on desk %s but could not request its updated presets",
@@ -894,7 +918,12 @@ class UpliftDeskBluetoothCoordinator(DataUpdateCoordinator):
         _LOGGER.debug("Height limit min callback received min: %d mm", min_mm)
         self.async_set_updated_data(self._desk)
 
+    def _async_unit_callback(self, unit: DeskUnit) -> None:
+        _LOGGER.debug("Unit callback received unit: %s", unit)
+        self.async_set_updated_data(self._desk)
+
     def _async_height_preset_callback(self, slot: int, raw: int) -> None:
+        self._unconfirmed_preset_slots.discard(slot)
         _LOGGER.debug(
             "Height preset %d callback received raw value %d (decoded: %s mm)",
             slot,

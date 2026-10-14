@@ -167,11 +167,13 @@ buttons use them too. This also fixes recall on desks programmed only through
 the Uplift phone app, which keeps its presets on the phone.
 
 The **Preset 1 Height** and **Preset 2 Height** diagnostic sensors show what
-the desk reports for each slot. Firmware reports these values in different
-units, so the integration picks the reading that fits within the desk's height
-limits and leaves the sensor unknown when that is ambiguous or the desk has not
-reported the preset. With **Query units and limits on connect** enabled, the
-integration asks the desk to re-report its presets after each save.
+the desk reports for each slot. The desk reports presets as raw numbers whose
+units vary by firmware, so the integration picks the reading that fits within
+the desk's height limits, uses the desk's display unit to break a tie, and
+leaves the sensor unknown when it still cannot tell. After a save, the sensor
+is unknown until the desk reports the new value; with **Query units and limits
+on connect** enabled, the integration asks the desk to re-report its presets
+right after each save.
 
 <!-- CONTRIBUTING -->
 ## Contributing

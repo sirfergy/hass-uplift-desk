@@ -11,6 +11,7 @@ from homeassistant.const import STATE_UNAVAILABLE, STATE_UNKNOWN, EntityCategory
 from homeassistant.exceptions import HomeAssistantError
 from homeassistant.helpers import entity_registry as er
 from uplift_ble.desk_configs import DESK_CONFIGS_BY_SERVICE
+from uplift_ble.desk_enums import DeskUnit
 
 from custom_components.uplift_desk.const import (
     CONF_QUERY_ON_CONNECT,
@@ -121,7 +122,27 @@ async def test_save_writes_save_then_requests_presets(hass, loaded_desk, slot):
 
     await press(hass, f"desk_save_preset_{slot}")
 
-    assert client.writes == [WAKE, WAKE, WAKE, command(SAVE_OPCODES[slot]), REQUEST_LIMITS]
+    # The readback repeats the wake + 0x07 sequence the desk answers on connect.
+    assert client.writes == [
+        WAKE, WAKE, WAKE, command(SAVE_OPCODES[slot]), WAKE, WAKE, WAKE, REQUEST_LIMITS
+    ]
+
+
+async def test_saved_preset_is_unknown_until_the_desk_reports_it(hass, loaded_desk):
+    _, client = loaded_desk
+    await client.simulate_notification(preset_packet(1, 300))
+    await client.simulate_notification(preset_packet(2, 486))
+    await hass.async_block_till_done()
+    assert float(preset_state(hass, 1)) == 762.0
+
+    await press(hass, "desk_save_preset_1")
+    await hass.async_block_till_done()
+    assert preset_state(hass, 1) == STATE_UNKNOWN
+    assert float(preset_state(hass, 2)) == pytest.approx(1234.44)
+
+    await client.simulate_notification(preset_packet(1, 278))
+    await hass.async_block_till_done()
+    assert float(preset_state(hass, 1)) == pytest.approx(706.12)
 
 
 async def test_save_skips_preset_request_when_queries_are_disabled(hass, fake_ble):
@@ -294,7 +315,18 @@ async def test_ambiguous_preset_resolves_when_limits_arrive_later(hass, loaded_d
 
     await client.simulate_notification(limits_packet(1300, 650))
     await hass.async_block_till_done()
-    assert float(preset_state(hass, 1)) == 1295.4
+    assert float(preset_state(hass, 1)) == pytest.approx(1295.4)
+
+
+async def test_display_unit_breaks_a_preset_tie(hass, loaded_desk):
+    _, client = loaded_desk
+    await client.simulate_notification(preset_packet(1, 510))
+    await hass.async_block_till_done()
+    assert preset_state(hass, 1) == STATE_UNKNOWN
+
+    await client.simulate_notification(make_units_packet(0x01))
+    await hass.async_block_till_done()
+    assert float(preset_state(hass, 1)) == pytest.approx(1295.4)
 
 
 async def test_preset_heights_do_not_outlive_the_connection(hass, fake_ble):
@@ -317,17 +349,30 @@ async def test_preset_heights_do_not_outlive_the_connection(hass, fake_ble):
 
 
 @pytest.mark.parametrize(
-    ("raw", "min_mm", "max_mm", "expected"),
+    ("raw", "min_mm", "max_mm", "unit", "expected"),
     [
-        (1100, 650, 1300, 1100.0),
-        (300, 650, 1300, 762.0),
-        (510, 650, 1300, 1295.4),
-        (510, 500, 1300, None),
-        (646, 650, 1300, 646.0),
-        (0, 650, 1300, None),
-        (2000, 650, 1300, None),
+        (1100, 650, 1300, None, 1100.0),
+        (300, 650, 1300, None, 762.0),
+        (510, 650, 1300, None, 1295.4),
+        (510, 500, 1300, None, None),
+        (510, 500, 1300, DeskUnit.INCHES, 1295.4),
+        (510, 500, 1300, DeskUnit.CENTIMETERS, 510.0),
+        (646, 650, 1300, None, 646.0),
+        (0, 650, 1300, DeskUnit.INCHES, None),
+        (2000, 650, 1300, DeskUnit.INCHES, None),
     ],
-    ids=["mm", "tenths-inch", "limits-disambiguate", "ambiguous", "tolerance", "empty", "out-of-range"],
+    ids=[
+        "mm",
+        "tenths-inch",
+        "limits-disambiguate",
+        "ambiguous",
+        "inches-tie-break",
+        "centimeters-tie-break",
+        "tolerance",
+        "empty",
+        "out-of-range",
+    ],
 )
-def test_decode_preset_height(raw, min_mm, max_mm, expected):
-    assert decode_preset_height_mm(raw, min_mm, max_mm) == expected
+def test_decode_preset_height(raw, min_mm, max_mm, unit, expected):
+    decoded = decode_preset_height_mm(raw, min_mm, max_mm, unit)
+    assert decoded == (None if expected is None else pytest.approx(expected))

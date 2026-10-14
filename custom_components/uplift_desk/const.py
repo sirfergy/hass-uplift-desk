@@ -17,6 +17,8 @@ SAVEABLE_PRESET_SLOTS: tuple[int, ...] = (1, 2)
 PRESET_SAVE_SETTLE_SECONDS: float = 2.0
 # Slack around the desk's height limits when decoding a reported preset.
 PRESET_HEIGHT_LIMIT_TOLERANCE_MM: float = 5.0
+# Pause after a save before asking the desk to re-report its presets.
+PRESET_REPORT_DELAY_SECONDS: float = 1.0
 
 # The desk reports height in tenths of its display unit: 1 mm steps in cm
 # mode, 2.54 mm steps in inch mode. The desk may also stop 1-2 mm short of
